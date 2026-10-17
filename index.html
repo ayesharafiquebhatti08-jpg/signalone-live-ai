@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SIGNALONE Live Vision</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-[#030508] text-slate-100">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo, useCallback } = React;
+    const { 
+      Shield, Camera, AlertTriangle, Activity, CheckCircle2, 
+      Radio, Lock, Play, RefreshCw, Filter, Search, Download, 
+      Eye, Bell, Flame, UserX, Car, Users, HelpCircle, 
+      Maximize2, Volume2, VolumeX, Database, Terminal, 
+      Clock, MapPin, Check, X, ChevronRight, Zap, ArrowUpRight,
+      Sliders, ShieldAlert, Cpu, HardDrive, Wifi, ShieldCheck,
+      RadioTower, Radar, EyeOff, AlertOctagon, Plus, Video, Upload, Square, Trash2,
+      Package, Sparkles, Sun, Users2, AlertCircle, PhoneCall, Link: LinkIcon, RefreshCcw
+    } = LucideReact;
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('command');
+      const [audioEnabled, setAudioEnabled] = useState(true);
+      const [sirenMuted, setSirenMuted] = useState(false);
+      const [userInteracted, setUserInteracted] = useState(false);
+      const [privacyMode, setPrivacyMode] = useState(false);
+      const [demoMode, setDemoMode] = useState(true);
+      const [geminiConsent, setGeminiConsent] = useState(null);
+      const [toast, setToast] = useState(null);
+      const [urlModalCamId, setUrlModalCamId] = useState(null);
+      const [urlInputValue, setUrlInputValue] = useState('');
+      const [aiModelLoading, setAiModelLoading] = useState(false);
+
+      const [cameras, setCameras] = useState([
+        { id: 'cam-1', name: 'Camera 1', sourceType: 'sample', sourceUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4', status: 'Streaming', riskScore: 0, activeThreat: null, lastSignalTime: 0 },
+        { id: 'cam-2', name: 'Camera 2', sourceType: 'none', sourceUrl: null, status: 'No Source', riskScore: 0, activeThreat: null, lastSignalTime: 0 },
+        { id: 'cam-3', name: 'Camera 3', sourceType: 'none', sourceUrl: null, status: 'No Source', riskScore: 0, activeThreat: null, lastSignalTime: 0 },
+        { id: 'cam-4', name: 'Camera 4', sourceType: 'none', sourceUrl: null, status: 'No Source', riskScore: 0, activeThreat: null, lastSignalTime: 0 }
+      ]);
+
+      const [incidents, setIncidents] = useState([]);
+      const [auditLog, setAuditLog] = useState([
+        { id: 'LOG-101', timestamp: new Date().toLocaleTimeString(), action: 'System Boot', details: 'SIGNALONE Proactive core initialized.' }
+      ]);
+
+      const videoRefs = useRef({});
+      const canvasRefs = useRef({});
+      const modelRef = useRef(null);
+      const audioCtxRef = useRef(null);
+      const sirenOscRef = useRef(null);
+      const geminiQueueRef = useRef(false);
+
+      const hasActiveCamera = useMemo(() => cameras.some(c => c.status === 'Streaming' || c.status === 'Live'), [cameras]);
+
+      const showToast = (message, type = 'success') => {
+        setToast({ message, type });
+        setTimeout(() => setToast(null), 3500);
+      };
+
+      const unlockAudio = () => {
+        if (!userInteracted) {
+          setUserInteracted(true);
+          try { audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+        }
+      };
+
+      const shouldRingSiren = useMemo(() => {
+        if (sirenMuted || !audioEnabled || !userInteracted) return false;
+        return cameras.some(c => (c.status === 'Streaming' || c.status === 'Live') && c.riskScore >= 85);
+      }, [cameras, sirenMuted, audioEnabled, userInteracted]);
+
+      useEffect(() => {
+        if (shouldRingSiren) {
+          try {
+            const ctx = audioCtxRef.current || new (window.AudioContext || window.webkitAudioContext)();
+            audioCtxRef.current = ctx;
+            if (ctx.state === 'suspended') ctx.resume();
+            if (!sirenOscRef.current) {
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.type = 'sawtooth';
+              osc.frequency.setValueAtTime(440, ctx.currentTime);
+              let up = true;
+              const interval = setInterval(() => {
+                if (!osc) return;
+                const current = osc.frequency.value;
+                if (up) { osc.frequency.setValueAtTime(Math.min(880, current + 45), ctx.currentTime); if (current >= 880) up = false; }
+                else { osc.frequency.setValueAtTime(Math.max(440, current - 45), ctx.currentTime); if (current <= 440) up = true; }
+              }, 150);
+              gain.gain.setValueAtTime(0.07, ctx.currentTime);
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              osc.start();
+              sirenOscRef.current = { osc, interval };
+            }
+          } catch (e) {}
+        } else {
+          if (sirenOscRef.current) {
+            clearInterval(sirenOscRef.current.interval);
+            try { sirenOscRef.current.osc.stop(); } catch (e) {}
+            sirenOscRef.current = null;
+          }
+        }
+      }, [shouldRingSiren]);
+
+      useEffect(() => {
+        if (!hasActiveCamera) return;
+        if (modelRef.current || aiModelLoading) return;
+        async function loadAI() {
+          setAiModelLoading(true);
+          try {
+            await window.tf.ready();
+            const loadedModel = await window.cocoSsd.load({ base: 'lite_mobilenet_v2' });
+            modelRef.current = loadedModel;
+          } catch (err) { console.debug(err); }
+          finally { setAiModelLoading(false); }
+        }
+        loadAI();
+      }, [hasActiveCamera]);
+
+      useEffect(() => {
+        cameras.forEach(cam => {
+          if (cam.sourceType === 'sample' && videoRefs.current[cam.id]) {
+            const v = videoRefs.current[cam.id];
+            v.crossOrigin = 'anonymous';
+            v.src = cam.sourceUrl;
+            v.loop = true;
+            v.muted = true;
+            v.play().catch(() => {});
+          }
+        });
+      }, []);
+
+      const setCameraSource = async (camId, type, customUrl = null) => {
+        unlockAudio();
+        setSirenMuted(false);
+        if (type === 'url' && !customUrl) { setUrlModalCamId(camId); return; }
+        const targetUrl = customUrl || (type === 'sample' ? 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4' : null);
+
+        setCameras(prev => prev.map(c => c.id === camId ? { ...c, sourceType: type, sourceUrl: targetUrl, status: 'Streaming', riskScore: 0, activeThreat: null } : c));
+        const videoEl = videoRefs.current[camId];
+        if (videoEl && targetUrl) {
+          videoEl.src = targetUrl;
+          videoEl.play().catch(() => {});
+        }
+      };
+
+      const topStatusBanner = useMemo(() => {
+        const activeThreats = cameras.filter(c => (c.status === 'Streaming' || c.status === 'Live') && c.riskScore >= 60 && c.activeThreat);
+        if (activeThreats.length === 0) return null;
+        const highest = activeThreats.reduce((prev, curr) => curr.riskScore > prev.riskScore ? curr : prev, activeThreats[0]);
+        return { text: `${highest.name}: ${highest.activeThreat} DETECTED`, type: highest.riskScore >= 85 ? 'emergency' : 'warning' };
+      }, [cameras]);
+
+      return (
+        <div onClick={unlockAudio} className="min-h-screen bg-[#030508] text-slate-100 font-sans relative">
+          {geminiConsent === null && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full space-y-4 text-center">
+                <h3 className="text-sm font-bold text-white uppercase">AI Scene Analysis Consent</h3>
+                <p className="text-xs text-slate-300">AI scene analysis sends small camera frames to Google Gemini. Allow?</p>
+                <div className="flex justify-center gap-3 pt-2">
+                  <button onClick={() => setGeminiConsent(false)} className="px-4 py-2 rounded bg-slate-800 text-slate-300 text-xs">Not now</button>
+                  <button onClick={() => setGeminiConsent(true)} className="px-4 py-2 rounded bg-rose-600 text-white text-xs font-bold">Allow</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {topStatusBanner && (
+            <div className={`px-4 py-2.5 flex items-center justify-between sticky top-0 z-50 font-mono font-bold text-xs sm:text-sm border-b ${
+              topStatusBanner.type === 'emergency' ? 'bg-rose-600 text-white animate-pulse' : 'bg-amber-600 text-slate-950'
+            }`}>
+              <span>{topStatusBanner.text}</span>
+              <button onClick={() => setSirenMuted(true)} className="px-3 py-1 bg-black/40 rounded text-xs">Mute Siren &amp; Acknowledge</button>
+            </div>
+          )}
+
+          <header className="sticky top-0 z-40 border-b border-slate-800 bg-[#030508]">
+            <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+              <h1 className="text-base sm:text-lg font-black tracking-widest uppercase font-mono">SIGNAL<span className="text-rose-500">ONE</span></h1>
+              <div className="flex items-center gap-3 font-mono text-xs">
+                <button onClick={() => setDemoMode(!demoMode)} className="px-3 py-1.5 rounded border bg-indigo-950 border-indigo-500 text-indigo-300">
+                  Demo mode: {demoMode ? 'ON' : 'OFF'}
+                </button>
+                <button onClick={() => setPrivacyMode(!privacyMode)} className="px-3 py-1.5 rounded border bg-slate-900 border-slate-800 text-slate-400">
+                  Privacy: {privacyMode ? 'ON' : 'OFF'}
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {cameras.map((cam) => {
+                  const isRunning = cam.status === 'Streaming' || cam.status === 'Live';
+                  return (
+                    <div key={cam.id} className="rounded-xl border border-slate-800 bg-slate-950 overflow-hidden flex flex-col">
+                      <div className="px-3 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                        <span className="text-xs font-mono font-bold">{cam.name}</span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-emerald-950 text-emerald-300 border border-emerald-800">{cam.status}</span>
+                      </div>
+                      <div className="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
+                        <video ref={el => videoRefs.current[cam.id] = el} playsInline muted autoPlay crossOrigin="anonymous" className="w-full h-full object-cover" />
+                        <canvas ref={el => canvasRefs.current[cam.id] = el} className="absolute inset-0 w-full h-full pointer-events-none" />
+                        {!isRunning && (
+                          <div className="absolute inset-0 bg-slate-950 flex flex-col items-center justify-center p-4 text-center">
+                            <button onClick={() => setCameraSource(cam.id, 'sample')} className="px-3 py-1.5 rounded bg-slate-900 text-slate-200 text-xs font-mono">Load Sample Feed</button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-xs font-mono">
+                        <span className="text-slate-400">Risk: <strong className="text-emerald-400">{cam.riskScore}/100</strong></span>
+                        <button onClick={() => setCameraSource(cam.id, 'none')} className="px-2 py-1 rounded bg-rose-950 text-rose-300">Off</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="lg:col-span-5 space-y-4">
+                <h2 className="text-xs font-mono uppercase tracking-widest text-slate-200 font-bold">Threat Queue</h2>
+                <div className="text-center py-12 rounded-xl border border-slate-800 bg-slate-900/30">
+                  <p className="text-xs font-mono text-slate-400">No active threats detected.</p>
+                </div>
+              </div>
+            </div>
+          </main>
+
+          <footer className="max-w-7xl mx-auto px-4 py-6 mt-12 border-t border-slate-900 text-center font-mono text-[11px] text-slate-500">
+            Person and object detection run on this device. When AI scene analysis is active, single low-resolution frames are sent to Google Gemini. No video is stored. No face recognition. Flags behaviour, never identity.
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
